@@ -505,6 +505,11 @@ class WanAnimate:
 
                 latents = noise
 
+                # Offload DiT to CPU during VAE encoding to free VRAM
+                if offload_model:
+                    self.noise_model.cpu()
+                    torch.cuda.empty_cache()
+
                 pose_latents_no_ref =  self.vae.encode(conditioning_pixel_values.to(torch.bfloat16))
                 pose_latents_no_ref = torch.stack(pose_latents_no_ref)
                 pose_latents = torch.cat([pose_latents_no_ref], dim=2)
@@ -517,6 +522,8 @@ class WanAnimate:
                 y_ref = torch.concat([mask_ref, ref_latents[0]]).to(dtype=torch.bfloat16, device=self.device)
 
                 img = ref_pixel_values[0, :, 0]
+                if offload_model:
+                    self.clip.model.to(self.device)
                 clip_context = self.clip.visual([img[:, None, :, :]]).to(dtype=torch.bfloat16, device=self.device)
 
                 if mask_reft_len > 0:
@@ -600,6 +607,13 @@ class WanAnimate:
                         "face_pixel_values": face_pixel_values_uncond,
                     }
 
+                # Offload VAE/CLIP, bring DiT back to GPU for diffusion loop
+                if offload_model:
+                    self.vae.model.cpu()
+                    self.clip.model.cpu()
+                    torch.cuda.empty_cache()
+                    self.noise_model.to(self.device)
+
                 for i, t in enumerate(tqdm(timesteps)):
                     latent_model_input = latents
                     timestep = [t]
@@ -632,6 +646,12 @@ class WanAnimate:
                     latents[0] = temp_x0.squeeze(0)
 
                     x0 = latents
+
+                # Offload DiT, bring VAE back for decoding
+                if offload_model:
+                    self.noise_model.cpu()
+                    torch.cuda.empty_cache()
+                    self.vae.model.to(self.device)
 
                 x0 = [x.to(dtype=torch.float32) for x in x0]
                 out_frames = torch.stack(self.vae.decode([x0[0][:, 1:]]))
